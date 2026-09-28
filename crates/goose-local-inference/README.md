@@ -183,47 +183,82 @@ for coverage, calibration assumptions, and validation scope.
 
 ### Recommendations before downloading weights
 
-Eredu now provides `inspect_model_metadata(&metadata, &options)`, accepting
-`ArtifactMetadata` and `MetadataInspectionOptions`, followed by
-`forecast_inspected_generation`. The facade
-validates a supplied tensor catalog and selects execution without local checkpoint
-files, weight payloads, native devices, or hardware discovery. Goose should use
-`BackendId::new("mlx")` explicitly for its eredu backend; this requires eredu's
-`mlx` feature and does not estimate llama.cpp execution.
+The local inference settings page discovers candidates when its search box is empty.
+Candidates come from HF trending GGUF/MLX repositories and quantizations of models
+on HF benchmark leaderboards; Goose maintains no model catalogue. The quality
+policy currently uses MMLU-Pro, IFStruct v1.0 and Terminal-Bench 2.0 as separate
+ranking cohorts, in that order. Scores from unrelated benchmarks are not averaged.
+Reported and verified scores retain their provenance and setup notes. Only an
+explicit or HF-tagged, unambiguous quantization relationship inherits an upstream
+checkpoint's scores; fine-tunes, adapters and merges do not. Inherited scores are
+labelled and are not measurements of the quantized variant.
 
-The upstream metadata-inspection gap is closed. Goose still needs to fetch and
-cache the metadata, invoke these APIs during discovery, and expose the results:
+Discovery returns lightweight results first. The desktop progressively requests
+variant listings and then one assessment per variant, with two background repository
+workers and an initial twelve-candidate inspection page. “Check more models” extends that budget.
+Typing a new query stops scheduling work for the previous results and ignores its
+late responses. Already dispatched ACP requests may finish in the background.
+Search order is retained; the settings landing page orders assessed candidates by
+fit, benchmark cohort/rank and popularity, and deduplicates scored checkpoints.
+At most three scored candidates receive a recommendation; fitting unscored models
+are labelled separately. Unknown or failed assessments remain visible.
 
-- Pin one immutable repository revision and fetch bounded metadata only. Preserve
-  source/revision provenance and verify all objects belong to that revision. A
-  server ignoring range requests must not trigger a full weight download.
-- For SafeTensors, supply exact configuration and index bytes, every shard's
-  header-length prefix and JSON header, full object lengths, and applicable
-  processor sidecars. Multiple shards require an index for this API.
-- For GGUF, supply every shard's complete metadata/tensor-descriptor prefix and
-  full object length, plus required projector/companion headers with explicit
-  roles. Let eredu validate encodings, tensor contracts and companion binding.
-- Check `report().is_compatible()` for metadata selection. `is_loadable()` is
-  deliberately false until actual local artifacts are inspected. Tokenizer,
-  template and native-tool readiness need separate validation.
-- Forecast an explicit input/output budget and selected loading policy against
-  observed hardware capacity plus an application reserve. Preserve unknown fit
-  results; headers cannot prove native layout optimizations or payload integrity.
-  Refine the estimate after downloading and loading the chosen model.
+With `mlx` compiled on Apple silicon, `recommendations` pins the HF manifest's
+commit SHA, supplies complete SafeTensors headers or bounded GGUF prefixes to
+`inspect_model_metadata`, and calls `forecast_inspected_generation`. Configuration,
+indexes, all shards and applicable processor/projector metadata use that same
+revision. Range responses must be HTTP 206 with a matching Content-Range; ignored
+ranges are rejected before consuming the response. Individual metadata objects
+are limited to 16 MiB, aggregate shard headers to 64 MiB and shard sets to 256.
+Oversized/incomplete metadata produces an unknown assessment, not a memory rejection.
+GGUF prefix reads can extend into payload bytes within the prefix limit; only the parsed header
+is supplied to eredu. No complete checkpoint download is initiated by discovery.
 
-See the pinned [metadata forecasting contract](https://github.com/jbg/eredu/blob/ee7670e11bc0704b340e1fa4e24bd5780f8fe687/doc/metadata-forecasting.md).
+The profile is text-only, 4,096 input and 1,024 output tokens, batch one, fully
+resident weights, no draft model, eredu's default conversion-retention policy and
+forecast calibration, a 256 MiB allocator-cache allowance and a 1 GiB reserve.
+It includes loading peaks. Hardware availability is sampled for each request;
+profile assumptions, bounds, uncertainty and revision are returned to the UI.
+An eredu fit is accepted as a llama.cpp fit estimate. An eredu shortfall or
+incompatibility does not establish that llama.cpp cannot run the GGUF, and does not
+disable its download. SafeTensors still requires a build with eredu support.
+
+HF JSON is cached in memory for ten minutes, partitioned by credentials and capped
+at 32 MiB. Up to 128 immutable forecasts are cached separately; current capacity is
+reapplied without fetching headers again. This is also the conservative prefilter:
+previously inspected revisions need no new tensor metadata even when their known
+lower bound exceeds current capacity. For a first encounter, repository size,
+parameter count and quantization names do not establish an unavoidable resident
+memory lower bound. They are never used to reject a candidate before inspection.
+
+Remaining limitations:
+
+- Benchmark coverage, evaluation settings and quantization lineage are incomplete.
+  HF-reported scores are not necessarily independently verified. Popularity is a
+  separate fallback, never a fabricated quality score. The quality module isolates
+  the HF source so another benchmark feed can replace or supplement it.
+- Discovery is bounded and is not an exhaustive search for the globally best model.
+  The first page may contain pending, unknown or oversized candidates while fit
+  estimates arrive. Additional candidates remain available through search/pages.
+- Cold forecasts preserve eredu's unbounded costs. They cannot establish tokenizer,
+  chat-template, native-tool readiness, payload integrity or actual performance.
+  Custom contexts, image input, speculation and non-default cache policies need a
+  new forecast. The recommendation profile does not change saved model settings.
+- Downloads resolve the repository again; loading still inspects the actual local
+  artifact. A recommendation at one revision is not admission for a newer revision.
+- There is no persistent metadata cache, configurable benchmark policy, automatic
+  smaller-context alternative, or post-download memory preflight yet.
+
+See the pinned [metadata forecasting contract](https://github.com/jbg/eredu/blob/ee7670e11bc0704b340e1fa4e24bd5780f8fe687/doc/metadata-forecasting.md)
+and [HF leaderboard API](https://huggingface.co/docs/hub/leaderboard-data-guide).
 
 ### Recommended Goose follow-up work
 
 In priority order:
 
-1. Implement the metadata-only discovery flow above, then use cold and loaded
-   forecasts for model recommendations and a preflight memory estimate. Derive
-   cold placement from the selected device with
-   `GenerationMemoryOptions::for_local_device`, include loading peaks, and allow
-   an explicit reserve. Use `for_hardware_device` when supplying already-observed
-   hardware facts without new discovery. Preserve unknown bounds instead of
-   promising a model fits. GGUF's default llama.cpp backend needs its own estimator.
+1. Extend discovery forecasts to the user's actual context, media and draft-model
+   settings; add post-download/load preflight and configurable reserves. Compare
+   smaller-context alternatives while preserving eredu's unknown bounds.
 2. Expose per-model conversion-retention policy, live target/drafter usage and a
    settled trim action. Use the upstream observations and trimming APIs rather
    than a second accounting system. Policy changes require reload; trimming does

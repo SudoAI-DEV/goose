@@ -92,6 +92,17 @@ instructions: |
   limit: unsupported projection layouts, arithmetic or row counts may still need
   temporary full-weight casts. Supported multi-row Metal prefill can now avoid them.
   Skip this comparison if no suitable checkpoint or forecast log is available.
+  On a build with eredu support, open local inference settings with an empty search
+  box. Confirm automatic candidates appear and acquire fit estimates progressively,
+  with benchmark provenance distinguished from popularity and inherited scores
+  labelled as original-model results. Search while inspections are pending and
+  confirm old results never replace the current query. Inspect a fitting and a
+  shortfall candidate: recommendations require a likely fit, while shortfalls show
+  Download anyway. Do not actually download new weights for this check. Network,
+  gated-repository and unsupported-forecast failures must stay unknown/unsupported,
+  not become memory shortfalls. Confirm bounded HTTP range requests rather than
+  checkpoint downloads, and that repeated inspection reuses cached forecasts with
+  fresh capacity. Record missing UI/network visibility as skipped checks.
   Run the same tool round trip with both legacy and GOOSE_STATE_MACHINE=1 sessions.
 
   ## Understanding First-Person Integration Testing
