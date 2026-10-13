@@ -93,12 +93,31 @@ instructions: |
   temporary full-weight casts. Supported multi-row Metal prefill can now avoid them.
   Skip this comparison if no suitable checkpoint or forecast log is available.
   On a build with eredu support, open local inference settings with an empty search
-  box. Confirm automatic candidates appear and acquire fit estimates progressively,
-  with benchmark provenance distinguished from popularity and inherited scores
-  labelled as original-model results. Search while inspections are pending and
+  box. Confirm up to ten distinct conversational, eredu-compatible checkpoints with
+  Artificial Analysis evidence become recommendations, preserving catalogue order
+  and displaying attribution and links to AA without raw benchmark scores. Only
+  explicitly measured AA configurations qualify; estimates must not supply rankings.
+  A compatible forecast with no upper bound is eligible when its lower bound plus reserve fits; show its estimated peak
+  as "at least" the lower bound, without a separate unknown-fit label.
+  Downloaded checkpoints (including other quantizations or catalogue conversions of
+  the same checkpoint) must be omitted from front-page recommendations, with the next
+  eligible checkpoint filling their place; they remain visible in search results.
+  Missing lower bounds, pending compatibility, unsupported, specialised and oversized
+  candidates must not appear on the front page. Confirm
+  offline landing-page recommendations without any HF requests, with inherited
+  scores labelled as original-model results. Inherited catalogue entries must record
+  matching checkpoint architecture and dimensions; declared model modifications need
+  their own benchmark evidence. Run just check-local-model-catalogue.
+  Confirm catalogue entries retain their assessed revision when downloaded; do not
+  start a new weight download for this check. Search while inspections are pending and
   confirm old results never replace the current query. Inspect a fitting and a
-  shortfall candidate: recommendations require a likely fit, while shortfalls show
-  Download anyway. Do not actually download new weights for this check. Network,
+  shortfall candidate in explicit search: recommendations require positive
+  suitability and compatibility plus eligible memory bounds, while shortfalls show
+  Download anyway. Prefer a likely-fitting variant when the same checkpoint also
+  offers an unbounded forecast.
+  Search for image-generation, diarization, base and unsupported-architecture
+  models. Confirm distinct suitability/compatibility reasons, no recommendation
+  badges, and Download anyway when the local backend is built. Do not actually download new weights for this check. Network,
   gated-repository and unsupported-forecast failures must stay unknown/unsupported,
   not become memory shortfalls. Confirm bounded HTTP range requests rather than
   checkpoint downloads, and that repeated inspection reuses cached forecasts with

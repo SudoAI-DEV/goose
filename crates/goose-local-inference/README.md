@@ -114,11 +114,10 @@ trade some throughput for lower retention. Goose does not expose a cache-policy
 override or change the limit on each request.
 
 Forecasts are descriptive estimates, not allocation limits or reservations.
-Goose does not yet use them for admission, model recommendations, or automatic
-prefill tuning. Cached-model recommendations still compare checkpoint file size
-with available memory, without request-specific KV state, workspace, or loading
-peaks. Forecasts use eredu's default calibration and observed availability, with
-no application budget or extra reserve configured by Goose.
+Goose does not yet use runtime forecasts for admission or automatic prefill tuning.
+Remote model recommendations use a separate metadata-only forecast profile with
+an explicit reserve, described below. Cached models are not recommended using
+checkpoint file size alone.
 
 The existing forecast calls pick up eredu's execution-derived workspace accounting,
 including attention tile retention, resident parameter conversions, dense LFM2
@@ -183,31 +182,139 @@ for coverage, calibration assumptions, and validation scope.
 
 ### Recommendations before downloading weights
 
-The local inference settings page discovers candidates when its search box is empty.
-Candidates come from HF trending GGUF/MLX repositories and quantizations of models
-on HF benchmark leaderboards; Goose maintains no model catalogue. The quality
-policy currently uses MMLU-Pro, IFStruct v1.0 and Terminal-Bench 2.0 as separate
-ranking cohorts, in that order. Scores from unrelated benchmarks are not averaged.
-Reported and verified scores retain their provenance and setup notes. Only an
-explicit or HF-tagged, unambiguous quantization relationship inherits an upstream
-checkpoint's scores; fine-tunes, adapters and merges do not. Inherited scores are
-labelled and are not measurements of the quantized variant.
+The local inference settings page uses the checked-in
+[`data/model-catalogue.json`](data/model-catalogue.json). On an eredu-enabled build,
+the empty-search landing page recomputes memory fit entirely offline, ranks by
+benchmark evidence, deduplicates evaluated checkpoints and shows up to ten eligible
+recommendations. Catalogue membership also supplies recommendations in explicit HF
+search results. No benchmark or model metadata is downloaded for the landing page,
+including models that cannot fit the current machine.
 
-Discovery returns lightweight results first. The desktop progressively requests
-variant listings and then one assessment per variant, with two background repository
-workers and an initial twelve-candidate inspection page. “Check more models” extends that budget.
-Typing a new query stops scheduling work for the previous results and ignores its
-late responses. Already dispatched ACP requests may finish in the background.
-Search order is retained; the settings landing page orders assessed candidates by
-fit, benchmark cohort/rank and popularity, and deduplicates scored checkpoints.
-At most three scored candidates receive a recommendation; fitting unscored models
-are labelled separately. Unknown or failed assessments remain visible.
+Rebuild on Apple silicon with eredu support:
+
+```sh
+just rebuild-local-model-catalogue
+just check-local-model-catalogue
+```
+
+The rebuild downloads metadata, never full checkpoints, and does not open a Metal
+device. Each eredu inspection runs in a fresh subprocess, with at most two active
+inspection workers, so inspection allocations cannot accumulate over the sweep.
+The parent fetches metadata for up to eight checkpoint families and owns shared HF
+rate-limit handling. Worker failures abort publication. A full refresh can take hours when many sharded conversions need inspection;
+the command uses an optimized build and the release job allows six hours. The
+offline check also works without eredu or Apple hardware. For a single
+repository diagnostic, run the `local-model-catalogue` binary with
+`--explain owner/model`. The rebuild writes rejection reasons and source errors to
+`target/local-model-catalogue-report.json`; completed checkpoint families are cached
+beside that report for up to 24 hours to resume interrupted refreshes. Delete the
+`.cache` and `.metadata` directories to force a completely fresh refresh. Public
+metadata is cached there for the same 24-hour window; HF rate-limit windows are
+honored with shared backoff across workers. The existing catalogue is replaced
+atomically only after successful generation and validation. Transient source errors
+fail the refresh rather than publish a depleted list.
+
+Release preparation rebuilds on a macOS runner, downloads the resulting artifact
+into the version-bump or patch-release PR, and validates it before committing. Release
+packaging consumes that committed file. When preparing a release manually, rebuild
+before `just prepare-release`. Schema/policy, forecast-profile or eredu-pin changes
+invalidate the old catalogue and require regeneration.
+
+The generator uses the Artificial Analysis Intelligence Index as its sole ranking
+source. It fetches scored models through AA's authenticated API and resolves exact
+HF checkpoint IDs from the weights links on AA model pages, without fuzzy name
+matching. Ambiguous weights links fail the refresh. Models without HF weights links
+are omitted. For multiple evaluated configurations of one checkpoint, the highest
+measured index score wins; the evaluation name and AA model link identify that configuration.
+The snapshot records the published methodology version and generation date.
+API scores are used only in memory to order checkpoints. The distributed catalogue
+contains the ordering and provenance, not scores or numeric ranks. Runtime filters
+preserve that order; no AA requests or credentials are needed in the desktop or CLI.
+Models with no AA evaluation are searchable and downloadable but not recommended.
+AA's API omits estimate status. The builder reads the explicit
+`intelligenceIndexIsEstimated` flag from each weights-linked model page, matching
+its AA model ID. Estimated configurations are excluded before choosing the best
+configuration for a checkpoint. Missing, conflicting or malformed status fails the
+refresh and preserves the existing catalogue. A change in AA's page structure may
+require a parser update; unknown status is never treated as measured.
+Evaluation reasoning settings and quantization can differ from the local configuration.
+
+Set `ARTIFICIAL_ANALYSIS_API_KEY_FILE` to a file containing only your API key, or
+set `ARTIFICIAL_ANALYSIS_API_KEY` in the release environment. Keys must not be
+committed or embedded in applications. The builder does not log or cache keys.
+The UI attributes Artificial Analysis and links to the evaluated configuration.
+Redistribution permission for the ordered catalogue remains to be confirmed with AA;
+this integration is currently for local evaluation before publication.
+
+Only unambiguous quantizations inherit scores;
+fine-tunes, adapters, distillations, abliterations and merges need their own evaluations.
+New modification claims in repository names, tags or card model names also prevent
+inheritance. Conflicting relation tags or datasets
+absent from the evaluated checkpoint make inheritance ambiguous and exclude that
+conversion. This can also exclude calibration-only conversions whose metadata does
+not distinguish calibration from training. Scores inherited from a full-precision
+checkpoint are not measurements of the conversion.
+
+Each inherited variant must also match the evaluated checkpoint's architecture and
+structural dimensions (hidden size, layers, attention/KV heads, vocabulary, and
+feed-forward width/expert count where declared). The builder reads revision-pinned
+config.json or bounded GGUF header ranges, records both identities and the evaluated
+revision, and rejects missing or conflicting evidence. Known GGUF architecture aliases
+are format mappings, not model allowlists. No weights are downloaded for these checks.
+A rejection appears in the builder report or `--explain` output.
+
+To reapply lineage policy to existing, immutable catalogue entries without repeating
+Eredu forecasts, run `local-model-catalogue --revalidate-lineage [catalogue.json] [report.json]`
+with the same features as the rebuild command. This only removes ineligible entries;
+run a full rebuild to discover replacements. It requires the same Eredu revision and
+forecast profile; source failures leave the catalogue unchanged.
+
+For each evaluated checkpoint and conversion class (format and quantization), the
+generator elects the first eligible artifact, considering the original checkpoint
+then publishers in download-count order. At most three artifacts per class undergo
+inspection. It imposes no model-size limit and never consults the generator host's
+RAM. Duplicate publishers are not all stored. Every accepted variant contains an
+immutable revision, exact download manifest, suitability evidence and eredu's
+computed lower/upper memory bounds and uncertainty, without host memory budgets.
+Runtime compares those bounds plus reserve with current capacity. During generation,
+these comparisons are checked against eredu at the fit boundaries. Native GGUF block
+metadata cannot be serialized in a `GenerationMemoryRequest`, so the catalogue stores
+the computed bounds rather than execution plans.
+
+HF task, purpose tags, architecture heads and chat configuration provide suitability
+evidence; model names and hand-maintained model IDs are not used. Non-conversational
+tasks, reward/embedding/classification models and explicitly tagged base models are
+excluded. Task alone or a knowledge benchmark alone does not establish conversational
+use. Instruction/agent evaluations, conversational tags or declared chat configuration
+provide positive evidence. Missing metadata stays unknown. Only unambiguous
+quantizations inherit suitability from an upstream checkpoint.
+
+Suitability, eredu compatibility and memory fit remain independent assessment fields.
+Recommendations require positive suitability and compatibility, plus supported
+benchmark evidence. Memory eligibility includes likely fits and forecasts with no
+upper bound whose measured lower bound plus reserve fits the available budget.
+Missing lower bounds, unavailable capacity and bounded forecasts that straddle the
+budget do not qualify. Unbounded recommendations retain the “Memory fit unknown”
+label; a likely-fitting variant is preferred within a checkpoint when available.
+Explicit search retains its result order and candidates. Models outside the catalogue
+are not recommended, but absence alone does not disrecommend them. Their variants
+can still receive live assessments: twelve repositories are inspected initially and
+“Check more models” extends that budget. Shortfalls, unsuitable models and incompatible
+GGUFs remain downloadable with explanations when their backend is available.
+Recommended downloads use the assessed immutable revision; a per-variant HF cache
+reference ensures later loading selects that snapshot rather than a stale `main`.
+A different cached revision is not marked downloaded for a catalogue entry. A
+successful download evicts any loaded execution after its active request finishes,
+so the next load uses the selected snapshot.
 
 With `mlx` compiled on Apple silicon, `recommendations` pins the HF manifest's
 commit SHA, supplies complete SafeTensors headers or bounded GGUF prefixes to
 `inspect_model_metadata`, and calls `forecast_inspected_generation`. Configuration,
 indexes, all shards and applicable processor/projector metadata use that same
-revision. Range responses must be HTTP 206 with a matching Content-Range; ignored
+revision. SafeTensors config identity and the first GGUF shard's architecture are
+screened through eredu's own resolvers before fetching remaining tensor metadata.
+Full inspection still establishes exact architecture/layout/quantization/backend
+compatibility. Range responses must be HTTP 206 with a matching Content-Range; ignored
 ranges are rejected before consuming the response. Individual metadata objects
 are limited to 16 MiB, aggregate shard headers to 64 MiB and shard sets to 256.
 Oversized/incomplete metadata produces an unknown assessment, not a memory rejection.
@@ -224,8 +331,11 @@ incompatibility does not establish that llama.cpp cannot run the GGUF, and does 
 disable its download. SafeTensors still requires a build with eredu support.
 
 HF JSON is cached in memory for ten minutes, partitioned by credentials and capped
-at 32 MiB. Up to 128 immutable forecasts are cached separately; current capacity is
-reapplied without fetching headers again. This is also the conservative prefilter:
+at 32 MiB. Up to 128 immutable forecasts or definitive incompatibilities are cached
+separately by repository, revision, format and file. The process-local cache cannot
+outlive the compiled eredu version. Transient failures and unverified compatibility
+are not cached as rejections. Current capacity is reapplied to cached forecasts
+without fetching headers again. This is also the conservative prefilter:
 previously inspected revisions need no new tensor metadata even when their known
 lower bound exceeds current capacity. For a first encounter, repository size,
 parameter count and quantization names do not establish an unavoidable resident
@@ -234,20 +344,40 @@ memory lower bound. They are never used to reject a candidate before inspection.
 Remaining limitations:
 
 - Benchmark coverage, evaluation settings and quantization lineage are incomplete.
-  HF-reported scores are not necessarily independently verified. Popularity is a
-  separate fallback, never a fabricated quality score. The quality module isolates
-  the HF source so another benchmark feed can replace or supplement it.
-- Discovery is bounded and is not an exhaustive search for the globally best model.
-  The first page may contain pending, unknown or oversized candidates while fit
-  estimates arrive. Additional candidates remain available through search/pages.
+  Estimated AA index values are excluded; HF conversion provenance is not necessarily
+  independently verified. Structural checks cannot detect undeclared weight changes that preserve
+  architecture and dimensions, nor establish that today's upstream revision is the
+  exact revision benchmarked. Conservative missing-evidence checks can omit valid
+  conversions, including those whose upstream config is gated from the public builder.
+  Popularity is only a tie-breaker within an evaluated checkpoint and a
+  representative-publisher signal. The quality module consumes AA as the sole source.
+- The catalogue is limited by benchmark coverage and the three-artifact inspection
+  budget per conversion class. It can miss suitable models or quantizations. Candidates
+  with unknown compatibility/suitability, missing memory evidence, oversized lower
+  bounds or unsupported execution remain available through explicit search but
+  do not fill the recommendation section. Catalogue repositories show the stored
+  representative variants; newly published variants appear after a refresh.
 - Cold forecasts preserve eredu's unbounded costs. They cannot establish tokenizer,
   chat-template, native-tool readiness, payload integrity or actual performance.
+  Declared template metadata is only suitability evidence. eredu's local
+  `inspect_text_model` skips supplied remote metadata; validating text sidecars
+  before download requires a corresponding upstream metadata inspection API.
   Custom contexts, image input, speculation and non-default cache policies need a
   new forecast. The recommendation profile does not change saved model settings.
-- Downloads resolve the repository again; loading still inspects the actual local
-  artifact. A recommendation at one revision is not admission for a newer revision.
-- There is no persistent metadata cache, configurable benchmark policy, automatic
-  smaller-context alternative, or post-download memory preflight yet.
+- Compatibility describes the pinned eredu build. Some otherwise common GGUFs are
+  rejected for tensor-binding differences; for example, the inspected GPT-OSS GGUF
+  uses `post_attention_norm` where eredu expects `attn_post_norm`. Some Gemma 2
+  conversions also lack the normalization tensor names eredu expects. Some Qwen 3.5/3.6
+  shared-expert gate layouts conflict with eredu's expected ranks. Some DeepSeek
+  conversions lack required MLA metadata or use incompatible metadata types.
+  Some Llama 3 GGUFs contain an unadmitted `rope_freqs.weight` tensor.
+  eredu also applies its default 2 GiB
+  per-tensor GGUF allocation limit during both remote inspection and local artifact
+  loading; its facade does not expose an override, so some large expert tensors
+  remain ineligible regardless of host RAM. Rejections are recorded in the refresh
+  report. Loading still inspects the actual local artifact.
+- There is no configurable benchmark policy, automatic smaller-context alternative
+  or post-download memory preflight yet. A release catalogue ages until refreshed.
 
 See the pinned [metadata forecasting contract](https://github.com/jbg/eredu/blob/ee7670e11bc0704b340e1fa4e24bd5780f8fe687/doc/metadata-forecasting.md)
 and [HF leaderboard API](https://huggingface.co/docs/hub/leaderboard-data-guide).
